@@ -6,6 +6,21 @@ from torch import nn
 import torch
 import numpy as np
 
+from skimage.transform import resize
+from skimage.color import rgb2gray
+
+
+def pre_proc(X):
+    x = np.uint8(resize(rgb2gray(X), (84, 84), mode='reflect') * 255)
+    """
+    import matplotlib.pyplot as plt
+    plt.imshow(x)
+    plt.show()
+    """
+    return x
+
+def img_wrap(np_array, dtype=np.float32):
+    return torch.from_numpy(np_array).view(-1,1,84,84)/255.
 
 def v_wrap(np_array, dtype=np.float32):
     if np_array.dtype != dtype:
@@ -33,6 +48,33 @@ def push_and_pull(opt, lnet, gnet, done, s_, bs, ba, br, gamma):
 
     loss = lnet.loss_func(
         v_wrap(np.vstack(bs)),
+        v_wrap(np.array(ba), dtype=np.int64) if ba[0].dtype == np.int64 else v_wrap(np.vstack(ba)),
+        v_wrap(np.array(buffer_v_target)[:, None]))
+
+    # calculate local gradients and push local parameters to global
+    opt.zero_grad()
+    loss.backward()
+    for lp, gp in zip(lnet.parameters(), gnet.parameters()):
+        gp._grad = lp.grad
+    opt.step()
+
+    # pull global parameters
+    lnet.load_state_dict(gnet.state_dict())
+
+def push_and_pull_atari(opt, lnet, gnet, done, s_, bs, ba, br, gamma):
+    if done:
+        v_s_ = 0.               # terminal
+    else:
+        v_s_ = lnet.forward(img_wrap(s_[None, :]))[-1].data.numpy()[0, 0]
+
+    buffer_v_target = []
+    for r in br[::-1]:    # reverse buffer r
+        v_s_ = r + gamma * v_s_
+        buffer_v_target.append(v_s_)
+    buffer_v_target.reverse()
+
+    loss = lnet.loss_func(
+        img_wrap(np.array(bs)),
         v_wrap(np.array(ba), dtype=np.int64) if ba[0].dtype == np.int64 else v_wrap(np.vstack(ba)),
         v_wrap(np.array(buffer_v_target)[:, None]))
 
